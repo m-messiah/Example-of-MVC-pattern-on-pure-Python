@@ -7,13 +7,11 @@
 # ===========================
 # Edited for Homework 3 by Maxim Muzafarov
 #
-import datetime
-
 __author__ = "m_messiah"
 
 DB_FILE = "main.db"
 DEBUG = False
-
+MAX_AVAIL = 3
 # ===========================
 #
 #        Utilities
@@ -81,6 +79,15 @@ class TextModel(object):
         self.title = title
         self.content = content
 
+    def __eq__(self, other):
+        return self.title == other.title and self.content == other.content
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return int("".join(map(str, map(ord, self.title))))
+
 
 class TextManager(object):
     def __init__(self):
@@ -102,11 +109,7 @@ class TextManager(object):
         ]
 
     def get_session(self, sessionid):
-        return TextModel(
-            sessionid,
-            "You are {0.seconds}s on this site"
-            .format(datetime.datetime.now() - users[sessionid])
-        )
+        return list(users[sessionid])
 
     def create(self, title, content):
         self._db[title] = content
@@ -147,7 +150,7 @@ class Router(object):
             sessionid = str(uuid.uuid1())
 
         if sessionid not in users:
-            users[sessionid] = datetime.datetime.now()
+            users[sessionid] = set()
 
         request_get_data["sessionid"] = sessionid
         if path in self._paths:
@@ -172,7 +175,14 @@ class TextController(object):
     def index(self, request_get_data):
         title = take_one_or_None(request_get_data, "title")
         sessionid = take_one_or_None(request_get_data, "sessionid")
-        current_text = self.text_manager.get_by_title(title) if title else ""
+        if len(users[sessionid]) >= MAX_AVAIL:
+            current_text = TextModel("Access denied!", "Limit is exceeded")
+        else:
+            if title:
+                current_text = self.text_manager.get_by_title(title)
+                users[sessionid].add(current_text)
+            else:
+                current_text = ""
         session_text = self.text_manager.get_session(sessionid)
         all_texts = self.text_manager.get_all()
 
@@ -228,7 +238,12 @@ class TextView(object):
         else:
             context["content"] = 'What do you want read?'
 
-        context["session"] = "<h1>{0.content}</h1>".format(context["session"])
+        context["session"] = """
+        <h3>Last viewed <small>({0} remains)</small></h3>
+         """.format(MAX_AVAIL - len(context["session"])) + "\n".join([
+            "<li><div><h5>{0.title}</h5>{0.content}</div></li>".format(text)
+            for text in context["session"]
+        ])
 
         t = """
         <!DOCTYPE html>
