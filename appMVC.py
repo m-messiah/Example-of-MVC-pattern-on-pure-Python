@@ -5,9 +5,12 @@
 #
 # By Pahaz Blinov.
 # ===========================
+# Edited for Homework 3 by Maxim Muzafarov
+#
+__author__ = "m_messiah"
 
-__author__ = 'pahaz'
-
+DB_FILE = "main.db"
+DEBUG = False
 # ===========================
 #
 #        Utilities
@@ -16,40 +19,146 @@ __author__ = 'pahaz'
 
 from cgi import escape
 from urlparse import parse_qs
+import shelve
+import uuid
+import Cookie
 
 
 def http_status(code):
+    """
+    Return a str representation of HTTP response status from int `code`.
+    """
     return "200 OK" if code == 200 else "404 Not Found"
 
 
-# ===========================
-#
-#           Model
-#
-# ===========================
+def parse_http_post_data(environ):
+    """
+    Parse a HTTP post data form WSGI `environ` argument.
+    """
+    try:
+        request_body_size = int(environ.get("CONTENT_LENGTH", 0))
+    except ValueError:
+        request_body_size = 0
 
-import shelve
+    request_body = environ["wsgi.input"].read(request_body_size)
+    body_query_dict = parse_qs(request_body)
+
+    return body_query_dict
+
+
+def parse_http_get_data(environ):
+    request_get_data = parse_qs(environ["QUERY_STRING"])
+    if "HTTP_COOKIE" in environ:
+        cookie = Cookie.BaseCookie()
+        cookie.load(environ["HTTP_COOKIE"])
+        if "NAME" in cookie:
+            sessionid = cookie["NAME"].value
+        else:
+            sessionid = str(uuid.uuid1())
+    else:
+        sessionid = str(uuid.uuid1())
+    request_get_data["sessionid"] = sessionid
+    return request_get_data
+
+
+def take_one_or_None(dict_, key):
+    """
+    Take one value by key from dict or return None.
+
+        >>> d = {"foo":[1,2,3], "baz":7}
+        >>> take_one_or_None(d, "foo")
+        1
+        >>> take_one_or_None(d, "bar") is None
+        True
+        >>> take_one_or_None(d, "baz")
+        7
+    """
+    val = dict_.get(key)
+    if type(val) in (list, tuple) and len(val) > 0:
+        val = val[0]
+    return val
+
+
+# ===========================
+#
+#         0. Sessions
+#
+# ===========================
+class Sessions(object):
+    def __init__(self):
+        self.sessions = dict()
+        self.limit = 3
+
+    def new(self, sessionid):
+        self.sessions[sessionid] = set()
+
+    def __contains__(self, sessionid):
+        return sessionid in self.sessions
+
+    def add_post(self, sessionid, post):
+        self.sessions[sessionid].add(post)
+
+    def avail_posts(self, sessionid):
+        return self.limit - len(self.sessions[sessionid])
+
+    def get_watched(self, sessionid):
+        return list(self.sessions[sessionid])
+
+
+# ===========================
+#
+#         1. Model
+#
+# ===========================
 
 
 class TextModel(object):
-    DB_FILE = 'main.db'
+    def __init__(self, title, content):
+        self.title = title
+        self.content = content
 
+
+class TextManager(object):
     def __init__(self):
-        self._db = shelve.open(self.DB_FILE)
+        self._db = shelve.open(DB_FILE)
 
-    def get(self, name, default_value):
-        return self._db.get(name, default_value)
+    def get_by_title(self, title):
+        """
+        Get Text object by name if exist else return None.
+        """
+        content = self._db.get(title)
+        return TextModel(title, content) if content else None
 
-    def all(self):
-        return self._db.keys()
+    def get_selected(self, titles):
+        """
+        Get Text objects by list of names
+        """
+        return [
+            TextModel(title, content)
+            for title, content in map(lambda t: (t, self._db.get(t)), titles)
+        ]
 
-    def set(self, key, value):
-        self._db[key] = value
+    def get_all(self):
+        """
+        Get list of all Text objects.
+        """
+        return [
+            TextModel(title, content) for title, content in self._db.items()
+        ]
+
+    def create(self, title, content):
+        if title in self._db:
+            return False
+        self._db[title] = content
         self._db.sync()
+        return True
 
-    def delete(self, key):
-        del self._db[key]
+    def delete(self, title):
+        if title not in self._db:
+            return False
+        del self._db[title]
         self._db.sync()
+        return True
 
 
 # ===========================
@@ -59,48 +168,108 @@ class TextModel(object):
 # ===========================
 
 class Router(object):
-    def __init__(self):
+    """
+    Router for requests.
+
+    """
+
+    def __init__(self, error_callback):
         self._paths = {}
+        self.not_found = error_callback
 
-    def route(self, environ, start_response):
-        path = environ['PATH_INFO']
-        query_dict = parse_qs(environ['QUERY_STRING'])
-
-        if path in self._paths:
-            res = self._paths[path](query_dict)
+    def route(self, request_path, request_get_data):
+        if request_path in self._paths:
+            res = self._paths[request_path](request_get_data)
         else:
-            res = self.default_response(query_dict)
+            res = self.not_found(request_path, request_get_data)
 
         return res
 
     def register(self, path, callback):
         self._paths[path] = callback
 
-    def default_response(self, *args):
-        return 404, "Nooo 404!"
-
 
 class TextController(object):
-    @staticmethod
-    def index(query_dict):
-        text = query_dict.get('id', [''])[0]
-        text = model.get(text, '')
+    def __init__(self,
+                 index_view, add_view, del_view, not_found_view,
+                 manager):
+        self.index_view = index_view
+        self.add_view = add_view
+        self.del_view = del_view
+        self.not_found_view = not_found_view
+        self.model_manager = manager
 
-        titles = model.all()
+    def index(self, request_get_data):
+        title = take_one_or_None(request_get_data, "title")
+        sessionid = take_one_or_None(request_get_data, "sessionid")
+        if sessionid not in sessions:
+            sessions.new(sessionid)
+
+        if title:
+            if sessions.avail_posts(sessionid):
+                current_text = self.model_manager.get_by_title(title)
+                if current_text:
+                    sessions.add_post(sessionid, title)
+            else:
+                current_text = TextModel("Access denied!", "Limit is exceeded")
+        else:
+            current_text = None
+
+        session_text = self.model_manager.get_selected(
+            sessions.get_watched(sessionid))
+        all_texts = self.model_manager.get_all()
+
         context = {
-            'titles': titles,
-            'text': text,
+            "all": all_texts,
+            "current": current_text,
+            "session": session_text,
+            "remains": sessions.avail_posts(sessionid)
         }
 
-        return 200, view_text.render(context)
+        return 200, self.index_view.render(context), sessionid
 
-    @staticmethod
-    def add(query_dict):
-        key = query_dict.get('k', [''])[0]
-        value = query_dict.get('v', [''])[0]
-        model.set(key, value)
-        context = {'url': "/text"}
-        return 200, view_redirect.render(context)
+    def add(self, request_get_data):
+        title = take_one_or_None(request_get_data, "title")
+        content = take_one_or_None(request_get_data, "content")
+        sessionid = take_one_or_None(request_get_data, "sessionid")
+        if not title or not content:
+            error = "Need fill the form fields."
+        else:
+            error = "Successfully added"
+            is_created = self.model_manager.create(
+                title, escape(content).encode('ascii', 'xmlcharrefreplace')
+            )
+            if not is_created:
+                error = "Title already exists."
+
+        context = {
+            'title': title,
+            'content': content,
+            'error': error,
+        }
+
+        return 200, self.add_view.render(context), sessionid
+
+    def delete(self, request_get_data):
+        title = take_one_or_None(request_get_data, "title")
+        sessionid = take_one_or_None(request_get_data, "sessionid")
+        if not title:
+            error = "Need title of post"
+        else:
+            error = "Successfully deleted"
+            is_deleted = self.text_manager.delete(title)
+            if not is_deleted:
+                error = "Title not exists."
+        context = {
+            'title': title,
+            'error': error,
+        }
+        return 200, self.del_view.render(context), sessionid
+
+    def not_found(self, request_path, request_get_data):
+        sessionid = take_one_or_None(request_get_data, "sessionid")
+        context = {"request": request_path}
+        return 404, self.not_found_view.render(context), sessionid
 
 
 # ===========================
@@ -108,35 +277,77 @@ class TextController(object):
 #           View
 #
 # ===========================
-
 class TextView(object):
     @staticmethod
     def render(context):
-        context['titles'] = [
-            '<li>{0}</li>'.format(x) for x in context['titles']
-        ]
-        context['titles'] = '\n'.join(context['titles'])
+        context["titles"] = "\n".join([
+            "<li>{0.title}</li>".format(text) for text in context["all"]
+        ])
+
+        if context["current"]:
+            context["content"] = """
+            <h1>{0.title}</h1>
+            {0.content}
+            """.format(context["current"])
+        else:
+            context["content"] = 'What do you want read?'
+
+        context["session"] = """
+        <h3>Last viewed <small>({0} remains)</small></h3>
+         """.format(context["remains"]) + "\n".join([
+            "<li><div><h5>{0.title}</h5>{0.content}</div></li>".format(text)
+            for text in context["session"]
+        ])
 
         t = """
+        <!DOCTYPE html>
+        <head>
+            <style>
+                div{border: 1px dotted;}
+            </style>
+        </head>
+        """
+        t += """
+        <html>
         <form method="GET">
-            <input type=text name=id />
+            <input type=text name=title placeholder="Post title" />
             <input type=submit value=read />
         </form>
-        <form method="GET" action="/text/add" >
-            <input type=text name=k /> <input type=text name=v />
-            <input type=submit value=write />
+        <span>{session}</span>
+        <form method="GET" action="/add">
+            <input type=text name=title placeholder="Text title" /> <br>
+            <textarea name=content placeholder="Text content!" ></textarea><br>
+            <input type=submit value=write/rewrite />
+            <button type=submit formaction="/del">delete</button>
         </form>
-        <div style="color: gray;">{text}</div>
+        <div>{content}</div>
         <ul>{titles}</ul>
-        """
-        return t.format(**context)
+        </html>
+        """.format(**context)
+        return t
+
+
+class NotFoundView(object):
+    @staticmethod
+    def render(context):
+        t = """
+        <!DOCTYPE html>
+        <html>
+        <h1>Path {request} not found. Please, go ahead.</h1>
+        </html>
+        """.format(**context)
+        return t
 
 
 class RedirectView(object):
     @staticmethod
     def render(context):
-        return '<meta http-equiv="refresh" content="0; url={url}" />' \
-            .format(**context)
+        return """
+        <meta http-equiv="refresh" content="3; url=/" />
+        <h1>{error} {title}</h1>
+        <h3>Please click <a href="/">home</a>
+        if your browser not support automatic redirects</h3>
+        """.format(**context)
 
 
 # ===========================
@@ -145,15 +356,18 @@ class RedirectView(object):
 #
 # ===========================
 
-rout = Router()
-model = TextModel()
-view_text = TextView()
-view_redirect = RedirectView()
-controller = TextController()
+text_manager = TextManager()
+controller = TextController(TextView,      # index
+                            RedirectView,  # add
+                            RedirectView,  # del
+                            NotFoundView,  # 404
+                            text_manager)
+sessions = Sessions()
 
-rout.register('/', lambda x: (200, "Index HI!"))
-rout.register('/text', controller.index)
-rout.register('/text/add', controller.add)
+router = Router(controller.not_found)
+router.register("/", controller.index)
+router.register("/add", controller.add)
+router.register("/del", controller.delete)
 
 
 # ===========================
@@ -163,10 +377,25 @@ rout.register('/text/add', controller.add)
 # ===========================
 
 def application(environ, start_response):
-    http_status_code, response_body = rout.route(environ, start_response)
-    # response_body += '<br><br> The request ENV: {0}'.format(repr(environ))
-    http_status_code_and_msg = http_status(http_status_code)
-    response_headers = [('Content-Type', 'text/html')]
+    request_path = environ["PATH_INFO"]
+    request_get_data = parse_http_get_data(environ)
 
-    start_response(http_status_code_and_msg, response_headers)
+    http_status_code, response_body, cookie = router.route(request_path,
+                                                           request_get_data)
+
+    if DEBUG:
+        response_body += "<br><br> The request ENV: {0}".format(repr(environ))
+
+    response_status = http_status(http_status_code)
+    response_headers = [("Content-Type", "text/html")]
+    if cookie:
+        response_headers.append(("Set-Cookie", "NAME={0}".format(cookie)))
+
+    start_response(response_status, response_headers)
     return [response_body]  # it could be any iterable.
+
+
+# if run as script do tests.
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()
