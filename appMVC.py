@@ -9,7 +9,7 @@
 #
 __author__ = "m_messiah"
 
-DB_FILE = "main.db"
+DB_FILE = "main"
 DEBUG = False
 # ===========================
 #
@@ -27,26 +27,29 @@ import Cookie
 def http_status(code):
     """
     Return a str representation of HTTP response status from int `code`.
+
+        >>> http_status(200)
+        '200 OK'
+        >>> http_status(301)
+        '404 Not Found'
+        >>> http_status(404)
+        '404 Not Found'
     """
     return "200 OK" if code == 200 else "404 Not Found"
 
 
-def parse_http_post_data(environ):
-    """
-    Parse a HTTP post data form WSGI `environ` argument.
-    """
-    try:
-        request_body_size = int(environ.get("CONTENT_LENGTH", 0))
-    except ValueError:
-        request_body_size = 0
-
-    request_body = environ["wsgi.input"].read(request_body_size)
-    body_query_dict = parse_qs(request_body)
-
-    return body_query_dict
-
-
 def parse_http_get_data(environ):
+    """
+    Return QUERY_STRING and sessionid from env
+        >>> env = {"QUERY_STRING": "a=1&b=2&c=3",
+        ...        "HTTP_COOKIE": "NAME=32229ca8-b0cb-11e3-8ed4-b8e8564a258c"}
+        >>> parse_http_get_data(env)['a']
+        ['1']
+        >>> parse_http_get_data(env)['b']
+        ['2']
+        >>> parse_http_get_data(env)['sessionid']
+        '32229ca8-b0cb-11e3-8ed4-b8e8564a258c'
+    """
     request_get_data = parse_qs(environ["QUERY_STRING"])
     if "HTTP_COOKIE" in environ:
         cookie = Cookie.BaseCookie()
@@ -96,13 +99,15 @@ class Sessions(object):
         return sessionid in self.sessions
 
     def add_post(self, sessionid, post):
+        if sessionid not in self:
+            self.new(sessionid)
         self.sessions[sessionid].add(post)
 
     def avail_posts(self, sessionid):
-        return self.limit - len(self.sessions[sessionid])
+        return self.limit - len(self.sessions.get(sessionid, []))
 
     def get_watched(self, sessionid):
-        return list(self.sessions[sessionid])
+        return list(self.sessions.get(sessionid, []))
 
 
 # ===========================
@@ -202,8 +207,6 @@ class TextController(object):
     def index(self, request_get_data):
         title = take_one_or_None(request_get_data, "title")
         sessionid = take_one_or_None(request_get_data, "sessionid")
-        if sessionid not in sessions:
-            sessions.new(sessionid)
 
         if title:
             if sessions.avail_posts(sessionid):
@@ -357,7 +360,7 @@ class RedirectView(object):
 # ===========================
 
 text_manager = TextManager()
-controller = TextController(TextView,      # index
+controller = TextController(TextView,  # index
                             RedirectView,  # add
                             RedirectView,  # del
                             NotFoundView,  # 404
@@ -398,4 +401,5 @@ def application(environ, start_response):
 # if run as script do tests.
 if __name__ == "__main__":
     import doctest
+
     doctest.testmod()
