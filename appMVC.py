@@ -38,19 +38,19 @@ def http_status(code):
     return "200 OK" if code == 200 else "404 Not Found"
 
 
-def parse_http_get_data(environ):
+def parse_headers_data(environ):
     """
     Return QUERY_STRING and sessionid from env
         >>> env = {"QUERY_STRING": "a=1&b=2&c=3",
         ...        "HTTP_COOKIE": "NAME=32229ca8-b0cb-11e3-8ed4-b8e8564a258c"}
-        >>> parse_http_get_data(env)['a']
+        >>> parse_headers_data(env)['a']
         ['1']
-        >>> parse_http_get_data(env)['b']
+        >>> parse_headers_data(env)['b']
         ['2']
-        >>> parse_http_get_data(env)['sessionid']
+        >>> parse_headers_data(env)['sessionid']
         '32229ca8-b0cb-11e3-8ed4-b8e8564a258c'
     """
-    request_get_data = parse_qs(environ["QUERY_STRING"])
+    request_data = parse_qs(environ["QUERY_STRING"])
     if "HTTP_COOKIE" in environ:
         cookie = Cookie.BaseCookie()
         cookie.load(environ["HTTP_COOKIE"])
@@ -60,8 +60,8 @@ def parse_http_get_data(environ):
             sessionid = str(uuid.uuid1())
     else:
         sessionid = str(uuid.uuid1())
-    request_get_data["sessionid"] = sessionid
-    return request_get_data
+    request_data["sessionid"] = sessionid
+    return request_data
 
 
 def take_one_or_None(dict_, key):
@@ -182,11 +182,11 @@ class Router(object):
         self._paths = {}
         self.not_found = error_callback
 
-    def route(self, request_path, request_get_data):
+    def route(self, request_path, request_data):
         if request_path in self._paths:
-            res = self._paths[request_path](request_get_data)
+            res = self._paths[request_path](request_data)
         else:
-            res = self.not_found(request_path, request_get_data)
+            res = self.not_found(request_path, request_data)
 
         return res
 
@@ -204,9 +204,9 @@ class TextController(object):
         self.not_found_view = not_found_view
         self.model_manager = manager
 
-    def index(self, request_get_data):
-        title = take_one_or_None(request_get_data, "title")
-        sessionid = take_one_or_None(request_get_data, "sessionid")
+    def index(self, request_data):
+        title = take_one_or_None(request_data, "title")
+        sessionid = take_one_or_None(request_data, "sessionid")
 
         if title:
             if sessions.avail_posts(sessionid):
@@ -231,10 +231,10 @@ class TextController(object):
 
         return 200, self.index_view.render(context), sessionid
 
-    def add(self, request_get_data):
-        title = take_one_or_None(request_get_data, "title")
-        content = take_one_or_None(request_get_data, "content")
-        sessionid = take_one_or_None(request_get_data, "sessionid")
+    def add(self, request_data):
+        title = take_one_or_None(request_data, "title")
+        content = take_one_or_None(request_data, "content")
+        sessionid = take_one_or_None(request_data, "sessionid")
         if not title or not content:
             error = "Need fill the form fields."
         else:
@@ -253,14 +253,14 @@ class TextController(object):
 
         return 200, self.add_view.render(context), sessionid
 
-    def delete(self, request_get_data):
-        title = take_one_or_None(request_get_data, "title")
-        sessionid = take_one_or_None(request_get_data, "sessionid")
+    def delete(self, request_data):
+        title = take_one_or_None(request_data, "title")
+        sessionid = take_one_or_None(request_data, "sessionid")
         if not title:
             error = "Need title of post"
         else:
             error = "Successfully deleted"
-            is_deleted = self.text_manager.delete(title)
+            is_deleted = self.model_manager.delete(title)
             if not is_deleted:
                 error = "Title not exists."
         context = {
@@ -381,10 +381,10 @@ router.register("/del", controller.delete)
 
 def application(environ, start_response):
     request_path = environ["PATH_INFO"]
-    request_get_data = parse_http_get_data(environ)
+    request_data = parse_headers_data(environ)
 
     http_status_code, response_body, cookie = router.route(request_path,
-                                                           request_get_data)
+                                                           request_data)
 
     if DEBUG:
         response_body += "<br><br> The request ENV: {0}".format(repr(environ))
