@@ -254,7 +254,7 @@ class TextController(object):
                 if session_data:
                     session_data.add(title)
                 else:
-                    session_data = {title}
+                    session_data = set([title])
                 sessions.set(request_session, session_data)
             else:
                 error = "Title already exists."
