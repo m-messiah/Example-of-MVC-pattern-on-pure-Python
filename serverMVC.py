@@ -7,10 +7,10 @@ import appMVC as app
 # It will receive the request, pass it to the application
 # and send the application's response to the client
 httpd = make_server(
-    'localhost',
+    '0.0.0.0',
     8051,
     app.application
 )
 
-print "Run: http://localhost:8051/"
+print "Run: http://0.0.0.0:8051/"
 httpd.serve_forever()
