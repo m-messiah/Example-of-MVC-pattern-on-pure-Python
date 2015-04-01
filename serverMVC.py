@@ -3,7 +3,7 @@ __author__ = 'm_messiah'
 from wsgiref.simple_server import make_server
 import appMVC as app
 
-PORT = 8051
+PORT = 8052
 
 # Instantiate the WSGI server.
 # It will receive the request, pass it to the application
